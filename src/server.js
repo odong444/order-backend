@@ -98,7 +98,7 @@ GOOGLE_REFRESH_TOKEN=${tokens.refresh_token}
   }
 });
 
-// 다중 주문 제출
+// 다중 주문 제출 (병렬 처리 버전)
 app.post('/api/submit-orders', upload.array('images', 20), async (req, res) => {
   try {
     if (!tokens) {
@@ -108,16 +108,14 @@ app.post('/api/submit-orders', upload.array('images', 20), async (req, res) => {
     const manager = req.body.manager;
     const orders = JSON.parse(req.body.orders || '[]');
     const files = req.files || [];
-    const results = [];
     
     if (!manager) {
       return res.status(400).json({ error: '담당자를 선택해주세요.' });
     }
-    
-    for (let i = 0; i < orders.length; i++) {
-      const orderData = orders[i];
+
+    // 병렬 처리
+    const results = await Promise.all(orders.map(async (orderData, i) => {
       const imageFile = files[i];
-      
       let imageUrl = '';
       
       // 이미지 업로드
@@ -176,8 +174,8 @@ app.post('/api/submit-orders', upload.array('images', 20), async (req, res) => {
         });
       }
       
-      results.push({ index: i, success: true, imageUrl });
-    }
+      return { index: i, success: true, imageUrl };
+    }));
     
     res.json({ 
       success: true, 
