@@ -28,7 +28,7 @@ const oauth2Client = new google.auth.OAuth2(
   process.env.REDIRECT_URI
 );
 
-// 토큰 저장 (메모리 - 프로덕션에서는 DB 사용 권장)
+// 토큰 저장
 let tokens = null;
 
 // 환경변수에서 토큰 로드
@@ -79,7 +79,6 @@ app.get('/auth/callback', async (req, res) => {
     
     console.log('=== 토큰 발급 완료 ===');
     console.log('GOOGLE_REFRESH_TOKEN=' + tokens.refresh_token);
-    console.log('GOOGLE_ACCESS_TOKEN=' + tokens.access_token);
     
     res.send(`
       <html>
@@ -90,96 +89,12 @@ app.get('/auth/callback', async (req, res) => {
           <pre style="background: #f5f5f5; padding: 20px; text-align: left; overflow-x: auto;">
 GOOGLE_REFRESH_TOKEN=${tokens.refresh_token}
           </pre>
-          <p>이 창을 닫아도 됩니다.</p>
         </body>
       </html>
     `);
   } catch (error) {
     console.error('OAuth 오류:', error);
     res.status(500).send('인증 실패: ' + error.message);
-  }
-});
-
-// 주문 정보 + 이미지 업로드
-app.post('/api/submit-order', upload.single('image'), async (req, res) => {
-  try {
-    if (!tokens) {
-      return res.status(401).json({ error: 'Google 인증이 필요합니다. /auth 로 접속하세요.' });
-    }
-
-    const orderData = JSON.parse(req.body.orderData || '{}');
-    const imageFile = req.file;
-    
-    let imageUrl = '';
-    
-    // 이미지가 있으면 Google Drive에 업로드
-    if (imageFile) {
-      const folderId = process.env.DRIVE_FOLDER_ID;
-      const fileName = `주문_${orderData['수취인명'] || 'unknown'}_${Date.now()}.${imageFile.originalname.split('.').pop()}`;
-      
-      const fileMetadata = {
-        name: fileName,
-        parents: folderId ? [folderId] : undefined
-      };
-      
-      const media = {
-        mimeType: imageFile.mimetype,
-        body: Readable.from(imageFile.buffer)
-      };
-      
-      const driveResponse = await drive.files.create({
-        requestBody: fileMetadata,
-        media: media,
-        fields: 'id, webViewLink'
-      });
-      
-      // 파일 공유 설정 (링크가 있는 모든 사용자 보기 가능)
-      await drive.permissions.create({
-        fileId: driveResponse.data.id,
-        requestBody: {
-          role: 'reader',
-          type: 'anyone'
-        }
-      });
-      
-      imageUrl = driveResponse.data.webViewLink;
-    }
-    
-    // Google Sheets에 데이터 저장
-    const spreadsheetId = process.env.SPREADSHEET_ID;
-    if (spreadsheetId) {
-      // 헤더 확인 및 생성
-      const sheetName = '주문목록';
-      await ensureSheetExists(spreadsheetId, sheetName);
-      
-      const headers = await getOrCreateHeaders(spreadsheetId, sheetName, orderData);
-      
-      // 데이터 행 구성
-      const rowData = headers.map(header => {
-        if (header === '주문일시') return new Date().toLocaleString('ko-KR');
-        if (header === '이미지') return imageUrl;
-        return orderData[header] || '';
-      });
-      
-      await sheets.spreadsheets.values.append({
-        spreadsheetId,
-        range: `${sheetName}!A:Z`,
-        valueInputOption: 'USER_ENTERED',
-        requestBody: {
-          values: [rowData]
-        }
-      });
-    }
-    
-    res.json({ 
-      success: true, 
-      imageUrl,
-      message: '주문 정보가 저장되었습니다.'
-    });
-    
-  } catch (error) {
-    console.error('주문 저장 오류:', error);
-    res.status(500).json({ error: error.message });
   }
 });
 
@@ -190,7 +105,7 @@ app.post('/api/submit-orders', upload.array('images', 20), async (req, res) => {
       return res.status(401).json({ error: 'Google 인증이 필요합니다.' });
     }
 
-    const manager = req.body.manager; // 담당자 = 시트명
+    const manager = req.body.manager;
     const orders = JSON.parse(req.body.orders || '[]');
     const files = req.files || [];
     const results = [];
@@ -237,10 +152,10 @@ app.post('/api/submit-orders', upload.array('images', 20), async (req, res) => {
         imageUrl = driveResponse.data.webViewLink;
       }
       
-      // Sheets에 저장 (담당자 시트명으로)
+      // Sheets에 저장
       const spreadsheetId = process.env.SPREADSHEET_ID;
       if (spreadsheetId) {
-        const sheetName = manager; // 담당자명 = 시트명
+        const sheetName = manager;
         await ensureSheetExists(spreadsheetId, sheetName);
         
         const headers = await getOrCreateHeaders(spreadsheetId, sheetName, orderData);
@@ -317,13 +232,12 @@ async function getOrCreateHeaders(spreadsheetId, sheetName, orderData) {
     let existingHeaders = response.data.values ? response.data.values[0] : [];
     
     if (existingHeaders.length === 0) {
-      // 헤더가 없으면 생성
       const orderKeys = Object.keys(orderData);
       const allHeaders = [...standardHeaders];
       
       orderKeys.forEach(key => {
         if (!allHeaders.includes(key)) {
-          allHeaders.splice(allHeaders.length - 2, 0, key); // 이미지, 주문일시 앞에 삽입
+          allHeaders.splice(allHeaders.length - 2, 0, key);
         }
       });
       
@@ -337,33 +251,6 @@ async function getOrCreateHeaders(spreadsheetId, sheetName, orderData) {
       });
       
       return allHeaders;
-    }
-    
-    // 새로운 필드가 있으면 헤더 확장
-    const orderKeys = Object.keys(orderData);
-    let needsUpdate = false;
-    
-    orderKeys.forEach(key => {
-      if (!existingHeaders.includes(key) && key !== '이미지' && key !== '주문일시') {
-        const insertIndex = existingHeaders.indexOf('이미지');
-        if (insertIndex > -1) {
-          existingHeaders.splice(insertIndex, 0, key);
-        } else {
-          existingHeaders.push(key);
-        }
-        needsUpdate = true;
-      }
-    });
-    
-    if (needsUpdate) {
-      await sheets.spreadsheets.values.update({
-        spreadsheetId,
-        range: `${sheetName}!A1`,
-        valueInputOption: 'USER_ENTERED',
-        requestBody: {
-          values: [existingHeaders]
-        }
-      });
     }
     
     return existingHeaders;
