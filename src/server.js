@@ -141,13 +141,26 @@ app.post('/api/submit-orders', upload.array('images', 20), async (req, res) => {
       });
     });
 
-    // 마지막 행 찾아서 그 다음에 추가 (A열부터 강제)
+// 비어있는 첫 번째 행 찾아서 거기부터 채우기
     if (spreadsheetId && allRows.length > 0) {
-      const lastRowResponse = await sheets.spreadsheets.values.get({
+      const allDataResponse = await sheets.spreadsheets.values.get({
         spreadsheetId,
-        range: `${sheetName}!A:A`
+        range: `${sheetName}!A:O`
       });
-      const nextRow = (lastRowResponse.data.values?.length || 1) + 1;
+      
+      const allData = allDataResponse.data.values || [];
+      
+      // 첫 번째 완전히 빈 행 찾기 (헤더 제외, 2행부터)
+      let nextRow = allData.length + 1;
+      
+      for (let i = 1; i < allData.length; i++) {
+        const row = allData[i];
+        // 행이 비어있거나 모든 셀이 빈 문자열이면
+        if (!row || row.length === 0 || row.every(cell => !cell || cell.trim() === '')) {
+          nextRow = i + 1; // 시트는 1부터 시작
+          break;
+        }
+      }
       
       await sheets.spreadsheets.values.update({
         spreadsheetId,
