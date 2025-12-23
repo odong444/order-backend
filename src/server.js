@@ -190,9 +190,14 @@ app.post('/api/submit-orders', upload.array('images', 20), async (req, res) => {
       return res.status(401).json({ error: 'Google 인증이 필요합니다.' });
     }
 
+    const manager = req.body.manager; // 담당자 = 시트명
     const orders = JSON.parse(req.body.orders || '[]');
     const files = req.files || [];
     const results = [];
+    
+    if (!manager) {
+      return res.status(400).json({ error: '담당자를 선택해주세요.' });
+    }
     
     for (let i = 0; i < orders.length; i++) {
       const orderData = orders[i];
@@ -232,10 +237,10 @@ app.post('/api/submit-orders', upload.array('images', 20), async (req, res) => {
         imageUrl = driveResponse.data.webViewLink;
       }
       
-      // Sheets에 저장
+      // Sheets에 저장 (담당자 시트명으로)
       const spreadsheetId = process.env.SPREADSHEET_ID;
       if (spreadsheetId) {
-        const sheetName = '주문목록';
+        const sheetName = manager; // 담당자명 = 시트명
         await ensureSheetExists(spreadsheetId, sheetName);
         
         const headers = await getOrCreateHeaders(spreadsheetId, sheetName, orderData);
@@ -262,7 +267,7 @@ app.post('/api/submit-orders', upload.array('images', 20), async (req, res) => {
     res.json({ 
       success: true, 
       results,
-      message: `${results.length}건의 주문이 저장되었습니다.`
+      message: `${results.length}건의 주문이 [${manager}] 시트에 저장되었습니다.`
     });
     
   } catch (error) {
