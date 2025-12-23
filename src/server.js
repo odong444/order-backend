@@ -38,6 +38,12 @@ if (process.env.GOOGLE_REFRESH_TOKEN) {
 const drive = google.drive({ version: 'v3', auth: oauth2Client });
 const sheets = google.sheets({ version: 'v4', auth: oauth2Client });
 
+// 고정 헤더
+const FIXED_HEADERS = [
+  '제품명', '수취인명', '연락처', '은행', '계좌(-)', '예금주',
+  '결제금액(원 쓰지 마세요)', '아이디', '주문번호', '주소', '닉네임', '회수이름', '회수연락처', '이미지', '주문일시'
+];
+
 // 헬스 체크
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', authenticated: !!tokens });
@@ -68,12 +74,6 @@ app.get('/auth/callback', async (req, res) => {
   }
 });
 
-// 고정 헤더
-const FIXED_HEADERS = [
-  '제품명', '수취인명', '연락처', '은행', '계좌(-)', '예금주',
-  '결제금액(원 쓰지 마세요)', '아이디', '주문번호', '주소', '닉네임', '회수이름', '회수연락처', '이미지', '주문일시'
-];
-
 // 다중 주문 제출 (인덱스 방식)
 app.post('/api/submit-orders', upload.array('images', 20), async (req, res) => {
   try {
@@ -82,7 +82,7 @@ app.post('/api/submit-orders', upload.array('images', 20), async (req, res) => {
     }
 
     const manager = req.body.manager;
-    const orders = JSON.parse(req.body.orders || '[]');  // 배열의 배열
+    const orders = JSON.parse(req.body.orders || '[]');
     const files = req.files || [];
     
     if (!manager) {
@@ -188,12 +188,6 @@ app.post('/api/submit-orders', upload.array('images', 20), async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-    
-  } catch (error) {
-    console.error('오류:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
 
 // 헤더 강제 설정 함수
 async function ensureHeaders(spreadsheetId, sheetName) {
@@ -205,7 +199,6 @@ async function ensureHeaders(spreadsheetId, sheetName) {
     
     const existingHeaders = response.data.values ? response.data.values[0] : [];
     
-    // 헤더가 없거나 첫 번째 헤더가 다르면 강제 덮어쓰기
     if (existingHeaders.length === 0 || existingHeaders[0] !== FIXED_HEADERS[0]) {
       await sheets.spreadsheets.values.update({
         spreadsheetId,
@@ -216,7 +209,6 @@ async function ensureHeaders(spreadsheetId, sheetName) {
       console.log(`[${sheetName}] 헤더 강제 설정 완료`);
     }
   } catch (error) {
-    // 에러 시에도 헤더 강제 설정
     await sheets.spreadsheets.values.update({
       spreadsheetId,
       range: `${sheetName}!A1`,
