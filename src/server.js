@@ -1,74 +1,4 @@
-require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const multer = require('multer');
-const { google } = require('googleapis');
-const { Readable } = require('stream');
-
-const app = express();
-const PORT = process.env.PORT || 3001;
-
-const upload = multer({ 
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }
-});
-
-app.use(cors({
-  origin: process.env.FRONTEND_URL || '*',
-  credentials: true
-}));
-app.use(express.json());
-
-const oauth2Client = new google.auth.OAuth2(
-  process.env.GOOGLE_CLIENT_ID,
-  process.env.GOOGLE_CLIENT_SECRET,
-  process.env.REDIRECT_URI
-);
-
-let tokens = null;
-
-if (process.env.GOOGLE_REFRESH_TOKEN) {
-  tokens = {
-    refresh_token: process.env.GOOGLE_REFRESH_TOKEN,
-    access_token: process.env.GOOGLE_ACCESS_TOKEN || null
-  };
-  oauth2Client.setCredentials(tokens);
-}
-
-const drive = google.drive({ version: 'v3', auth: oauth2Client });
-const sheets = google.sheets({ version: 'v4', auth: oauth2Client });
-
-// 헬스 체크
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', authenticated: !!tokens });
-});
-
-// OAuth 인증
-app.get('/auth', (req, res) => {
-  const authUrl = oauth2Client.generateAuthUrl({
-    access_type: 'offline',
-    prompt: 'consent',
-    scope: [
-      'https://www.googleapis.com/auth/drive.file',
-      'https://www.googleapis.com/auth/spreadsheets'
-    ]
-  });
-  res.redirect(authUrl);
-});
-
-app.get('/auth/callback', async (req, res) => {
-  const { code } = req.query;
-  try {
-    const { tokens: newTokens } = await oauth2Client.getToken(code);
-    tokens = newTokens;
-    oauth2Client.setCredentials(tokens);
-    res.send(`<h1>✅ 인증 성공!</h1><pre>GOOGLE_REFRESH_TOKEN=${tokens.refresh_token}</pre>`);
-  } catch (error) {
-    res.status(500).send('인증 실패: ' + error.message);
-  }
-});
-
-// 다중 주문 제출 (병렬 처리)
+// 다중 주문 제출 (병렬 처리) - 안정화 버전
 app.post('/api/submit-orders', upload.array('images', 20), async (req, res) => {
   try {
     if (!tokens) {
@@ -86,9 +16,17 @@ app.post('/api/submit-orders', upload.array('images', 20), async (req, res) => {
     const spreadsheetId = process.env.SPREADSHEET_ID;
     const sheetName = manager;
     
-    // 시트 & 헤더 먼저 한번만 확인
+    // 시트 확인/생성
     await ensureSheetExists(spreadsheetId, sheetName);
-    const headers = await getOrCreateHeaders(spreadsheetId, sheetName, orders[0] || {});
+    
+    // 고정 헤더 (항상 이 순서로)
+    const fixedHeaders = [
+      '제품명', '수취인명', '연락처', '은행', '계좌(-)', '예금주',
+      '결제금액(원 쓰지 마세요)', '아이디', '주문번호', '주소', '닉네임', '회수이름', '회수연락처', '이미지', '주문일시'
+    ];
+    
+    // 헤더 확인 및 강제 설정
+    await ensureHeaders(spreadsheetId, sheetName, fixedHeaders);
 
     // 병렬로 이미지 업로드
     const uploadPromises = orders.map(async (orderData, i) => {
@@ -124,20 +62,26 @@ app.post('/api/submit-orders', upload.array('images', 20), async (req, res) => {
 
     const uploadResults = await Promise.all(uploadPromises);
 
-    // 모든 행 데이터 한번에 준비
+    // 고정 헤더 순서대로 데이터 매핑
     const allRows = uploadResults.map(({ orderData, imageUrl }) => {
-      return headers.map(header => {
+      return fixedHeaders.map(header => {
         if (header === '주문일시') return new Date().toLocaleString('ko-KR');
         if (header === '이미지') return imageUrl;
         return orderData[header] || '';
       });
     });
 
-    // 한번에 일괄 추가 (API 호출 1번으로 줄임)
+    // 마지막 행 찾아서 그 다음에 추가 (A열부터 강제)
     if (spreadsheetId && allRows.length > 0) {
-      await sheets.spreadsheets.values.append({
+      const lastRowResponse = await sheets.spreadsheets.values.get({
         spreadsheetId,
-        range: `${sheetName}!A:Z`,
+        range: `${sheetName}!A:A`
+      });
+      const nextRow = (lastRowResponse.data.values?.length || 1) + 1;
+      
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: `${sheetName}!A${nextRow}`,
         valueInputOption: 'USER_ENTERED',
         requestBody: { values: allRows }
       });
@@ -153,6 +97,37 @@ app.post('/api/submit-orders', upload.array('images', 20), async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// 헤더 강제 설정 함수
+async function ensureHeaders(spreadsheetId, sheetName, fixedHeaders) {
+  try {
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `${sheetName}!A1:O1`
+    });
+    
+    const existingHeaders = response.data.values ? response.data.values[0] : [];
+    
+    // 헤더가 없거나 첫 번째 헤더가 다르면 강제 덮어쓰기
+    if (existingHeaders.length === 0 || existingHeaders[0] !== fixedHeaders[0]) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: `${sheetName}!A1`,
+        valueInputOption: 'USER_ENTERED',
+        requestBody: { values: [fixedHeaders] }
+      });
+      console.log(`[${sheetName}] 헤더 강제 설정 완료`);
+    }
+  } catch (error) {
+    // 에러 시에도 헤더 강제 설정
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `${sheetName}!A1`,
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: [fixedHeaders] }
+    });
+  }
+}
 
 async function ensureSheetExists(spreadsheetId, sheetName) {
   try {
@@ -171,37 +146,3 @@ async function ensureSheetExists(spreadsheetId, sheetName) {
     console.error('시트 확인 오류:', error);
   }
 }
-
-async function getOrCreateHeaders(spreadsheetId, sheetName, orderData) {
-  const standardHeaders = [
-    '제품명', '수취인명', '연락처', '은행', '계좌(-)', '예금주',
-    '결제금액(원 쓰지 마세요)', '아이디', '주문번호', '주소', '닉네임', '회수이름', '회수연락처', '이미지', '주문일시'
-  ];
-  
-  try {
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: `${sheetName}!1:1`
-    });
-    
-    let existingHeaders = response.data.values ? response.data.values[0] : [];
-    
-    if (existingHeaders.length === 0) {
-      await sheets.spreadsheets.values.update({
-        spreadsheetId,
-        range: `${sheetName}!A1`,
-        valueInputOption: 'USER_ENTERED',
-        requestBody: { values: [standardHeaders] }
-      });
-      return standardHeaders;
-    }
-    
-    return existingHeaders;
-  } catch (error) {
-    return standardHeaders;
-  }
-}
-
-app.listen(PORT, () => {
-  console.log(`🚀 서버 실행: http://localhost:${PORT}`);
-});
