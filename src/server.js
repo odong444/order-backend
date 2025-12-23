@@ -74,7 +74,7 @@ const FIXED_HEADERS = [
   '결제금액(원 쓰지 마세요)', '아이디', '주문번호', '주소', '닉네임', '회수이름', '회수연락처', '이미지', '주문일시'
 ];
 
-// 다중 주문 제출 (안정화 버전)
+// 다중 주문 제출 (인덱스 방식)
 app.post('/api/submit-orders', upload.array('images', 20), async (req, res) => {
   try {
     if (!tokens) {
@@ -82,7 +82,7 @@ app.post('/api/submit-orders', upload.array('images', 20), async (req, res) => {
     }
 
     const manager = req.body.manager;
-    const orders = JSON.parse(req.body.orders || '[]');
+    const orders = JSON.parse(req.body.orders || '[]');  // 배열의 배열
     const files = req.files || [];
     
     if (!manager) {
@@ -99,13 +99,13 @@ app.post('/api/submit-orders', upload.array('images', 20), async (req, res) => {
     await ensureHeaders(spreadsheetId, sheetName);
 
     // 병렬로 이미지 업로드
-    const uploadPromises = orders.map(async (orderData, i) => {
+    const uploadPromises = orders.map(async (orderValues, i) => {
       const imageFile = files[i];
       let imageUrl = '';
       
       if (imageFile) {
         const folderId = process.env.DRIVE_FOLDER_ID;
-        const fileName = `주문_${orderData['수취인명'] || 'unknown'}_${Date.now()}_${i}.${imageFile.originalname.split('.').pop()}`;
+        const fileName = `주문_${orderValues[1] || 'unknown'}_${Date.now()}_${i}.${imageFile.originalname.split('.').pop()}`;
         
         const driveResponse = await drive.files.create({
           requestBody: {
@@ -127,21 +127,30 @@ app.post('/api/submit-orders', upload.array('images', 20), async (req, res) => {
         imageUrl = driveResponse.data.webViewLink;
       }
       
-      return { orderData, imageUrl, index: i };
+      return { orderValues, imageUrl, index: i };
     });
 
     const uploadResults = await Promise.all(uploadPromises);
 
-    // 고정 헤더 순서대로 데이터 매핑
-    const allRows = uploadResults.map(({ orderData, imageUrl }) => {
-      return FIXED_HEADERS.map(header => {
-        if (header === '주문일시') return new Date().toLocaleString('ko-KR');
-        if (header === '이미지') return imageUrl;
-        return orderData[header] || '';
-      });
+    // 인덱스 방식: A~M열 순서대로, N열 이미지, O열 주문일시
+    const allRows = uploadResults.map(({ orderValues, imageUrl }) => {
+      const row = [];
+      
+      // A~M열 (인덱스 0~12): 순서대로 값 넣기
+      for (let i = 0; i < 13; i++) {
+        row.push(orderValues[i] || '');
+      }
+      
+      // N열 (인덱스 13): 이미지 링크 고정
+      row.push(imageUrl);
+      
+      // O열 (인덱스 14): 주문일시 고정
+      row.push(new Date().toLocaleString('ko-KR'));
+      
+      return row;
     });
 
-// 비어있는 첫 번째 행 찾아서 거기부터 채우기
+    // 비어있는 첫 번째 행 찾아서 거기부터 채우기
     if (spreadsheetId && allRows.length > 0) {
       const allDataResponse = await sheets.spreadsheets.values.get({
         spreadsheetId,
@@ -155,9 +164,8 @@ app.post('/api/submit-orders', upload.array('images', 20), async (req, res) => {
       
       for (let i = 1; i < allData.length; i++) {
         const row = allData[i];
-        // 행이 비어있거나 모든 셀이 빈 문자열이면
         if (!row || row.length === 0 || row.every(cell => !cell || cell.trim() === '')) {
-          nextRow = i + 1; // 시트는 1부터 시작
+          nextRow = i + 1;
           break;
         }
       }
@@ -174,6 +182,12 @@ app.post('/api/submit-orders', upload.array('images', 20), async (req, res) => {
       success: true, 
       message: `${orders.length}건의 주문이 [${manager}] 시트에 저장되었습니다.`
     });
+    
+  } catch (error) {
+    console.error('오류:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
     
   } catch (error) {
     console.error('오류:', error);
