@@ -174,8 +174,8 @@ async function ensureSheetExists(spreadsheetId, sheetName) {
 
 async function getOrCreateHeaders(spreadsheetId, sheetName, orderData) {
   const standardHeaders = [
-    '제품명', '수취인명', '연락처', '은행', '계좌', '예금주',
-    '결제금액', '아이디', '주문번호', '주소', '닉네임', '회수이름', '회수연락처', '이미지', '주문일시'
+    '제품명', '수취인명', '연락처', '은행', '계좌(-)', '예금주',
+    '결제금액(원 쓰지 마세요)', '아이디', '주문번호', '주소', '닉네임', '회수이름', '회수연락처', '이미지', '주문일시'
   ];
   
   try {
