@@ -145,7 +145,7 @@ app.post('/api/submit-orders', upload.array('images', 20), async (req, res) => {
       row.push(imageUrl);
       
       // O열 (인덱스 14): 주문일시 고정
-      row.push(new Date().toLocaleString('ko-KR'));
+      row.push(new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }));
       
       return row;
     });
