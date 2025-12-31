@@ -4,6 +4,7 @@ const cors = require('cors');
 const multer = require('multer');
 const { google } = require('googleapis');
 const { Readable } = require('stream');
+const Anthropic = require('@anthropic-ai/sdk');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -18,6 +19,11 @@ app.use(cors({
   credentials: true
 }));
 app.use(express.json());
+
+// Anthropic 클라이언트 초기화
+const anthropic = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY
+});
 
 const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_CLIENT_ID,
@@ -44,12 +50,81 @@ const FIXED_HEADERS = [
   '결제금액(원 쓰지 마세요)', '아이디', '주문번호', '주소', '닉네임', '회수이름', '회수연락처', '이미지', '주문일시'
 ];
 
+// ============================================
+// AI 주문 정보 파싱 엔드포인트
+// ============================================
+app.post('/api/parse-order', async (req, res) => {
+  try {
+    const { text } = req.body;
+    
+    if (!text || text.trim() === '') {
+      return res.status(400).json({ error: '텍스트를 입력해주세요.' });
+    }
+
+    const prompt = `다음 주문 정보를 분석해서 JSON으로 반환해줘.
+
+규칙:
+- 첫 번째 한글 이름(2~4글자) → 수취인명
+- 두 번째 한글 이름 → 예금주
+- 세 번째 한글 이름 → 회수이름
+- 첫 번째 전화번호(010-xxxx-xxxx 또는 01xxxxxxxxx) → 연락처
+- 두 번째 전화번호 → 회수연락처
+- 은행명(xx은행, xx뱅크 등) → 은행
+- 계좌번호 형태(숫자와 하이픈) → 계좌
+- 금액(숫자, 쉼표 포함 가능) → 결제금액 (숫자만 추출)
+- 영문 아이디 형태 → 아이디
+- 긴 숫자열(12자리 이상) → 주문번호
+- 주소 형태(시/도, 구/군, 동/읍/면 포함) → 주소
+- 제품명/상품명 → 제품명 (보통 첫 줄에 있음)
+- 닉네임 형태 → 닉네임
+
+입력:
+${text}
+
+반드시 아래 JSON 형식으로만 응답해. 다른 설명 없이 JSON만:
+{"제품명":"","수취인명":"","연락처":"","은행":"","계좌":"","예금주":"","결제금액":"","아이디":"","주문번호":"","주소":"","닉네임":"","회수이름":"","회수연락처":""}`;
+
+    const message = await anthropic.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 1024,
+      messages: [{ role: 'user', content: prompt }]
+    });
+
+    const responseText = message.content[0].text.trim();
+    
+    // JSON 파싱 시도
+    let parsed;
+    try {
+      // JSON 블록 추출 (```json ... ``` 형태일 경우 대비)
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        parsed = JSON.parse(jsonMatch[0]);
+      } else {
+        throw new Error('JSON 형식을 찾을 수 없습니다.');
+      }
+    } catch (parseError) {
+      console.error('JSON 파싱 오류:', parseError, 'Raw:', responseText);
+      return res.status(500).json({ error: 'AI 응답 파싱 실패', raw: responseText });
+    }
+
+    res.json({ success: true, data: parsed });
+
+  } catch (error) {
+    console.error('AI 파싱 오류:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================
 // 헬스 체크
+// ============================================
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', authenticated: !!tokens });
 });
 
+// ============================================
 // OAuth 인증
+// ============================================
 app.get('/auth', (req, res) => {
   const authUrl = oauth2Client.generateAuthUrl({
     access_type: 'offline',
@@ -74,7 +149,9 @@ app.get('/auth/callback', async (req, res) => {
   }
 });
 
+// ============================================
 // 다중 주문 제출 (인덱스 방식)
+// ============================================
 app.post('/api/submit-orders', upload.array('images', 20), async (req, res) => {
   try {
     if (!tokens) {
@@ -189,7 +266,9 @@ app.post('/api/submit-orders', upload.array('images', 20), async (req, res) => {
   }
 });
 
+// ============================================
 // 헤더 강제 설정 함수
+// ============================================
 async function ensureHeaders(spreadsheetId, sheetName) {
   try {
     const response = await sheets.spreadsheets.values.get({
@@ -218,7 +297,9 @@ async function ensureHeaders(spreadsheetId, sheetName) {
   }
 }
 
+// ============================================
 // 시트 존재 확인/생성 함수
+// ============================================
 async function ensureSheetExists(spreadsheetId, sheetName) {
   try {
     const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
