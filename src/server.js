@@ -85,7 +85,7 @@ ${text}
 {"제품명":"","수취인명":"","연락처":"","은행":"","계좌":"","예금주":"","결제금액":"","아이디":"","주문번호":"","주소":"","닉네임":"","회수이름":"","회수연락처":""}`;
 
     const message = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-3-5-haiku-20241022',
       max_tokens: 1024,
       messages: [{ role: 'user', content: prompt }]
     });
